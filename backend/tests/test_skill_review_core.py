@@ -2,6 +2,7 @@ import io
 import json
 import stat
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from deerflow.skills.review.cli import main as review_cli_main
 from deerflow.skills.review.models import PackageLimits, normalize_relative_path
 from deerflow.skills.review.readers import ArchivePackageReader, parse_skill_uri
 from deerflow.skills.review.renderer import build_static_report, render_report_markdown
+from deerflow.skills.review.resource_graph import build_resource_graph
 
 CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "contracts" / "skill_review"
 
@@ -111,6 +113,48 @@ def test_resource_graph_ignores_eval_fixture_references(tmp_path):
     facts = analyze_skill_package(LocalDirectoryReader(tmp_path).read())
 
     assert not any(f["rule_id"] == "resource.missing" and f["path"].startswith("evals/fixtures/") for f in facts["findings"])
+
+
+def test_resource_graph_resolves_links_written_with_relative_prefix(tmp_path):
+    # Targets are written as "./..." so the bare-path fallback cannot mask the
+    # link pattern: these have to be found by the link regex itself. Excluding
+    # "[" from the label must keep plain links, images, titled links, anchors,
+    # and labels that themselves contain a "[" resolving exactly as before.
+    body = "\n".join(
+        [
+            "Read [guide](./references/guide.md).",
+            "See ![diagram](./assets/diagram.png).",
+            'Open [spec](./references/spec.md "Spec") at [anchor](./references/spec.md#setup).',
+            "Nested [see [guide](./references/guide.md) label.",
+        ]
+    )
+    _write(tmp_path / "SKILL.md", _valid_skill() + "\n" + body + "\n")
+    _write(tmp_path / "references" / "guide.md", "# Guide\n")
+    _write(tmp_path / "references" / "spec.md", "# Spec\n")
+    _write(tmp_path / "assets" / "diagram.png", "not-really-a-png")
+
+    facts = analyze_skill_package(LocalDirectoryReader(tmp_path).read())
+
+    edges = facts["resources"]["edges"]
+    assert {"source": "SKILL.md", "target": "references/guide.md"} in edges
+    assert {"source": "SKILL.md", "target": "references/spec.md"} in edges
+    assert {"source": "SKILL.md", "target": "assets/diagram.png"} in edges
+
+
+def test_resource_graph_scans_unmatched_brackets_in_linear_time():
+    # Regression guard: the link pattern used to accept "[" inside the label,
+    # so every unmatched "[" scanned to the end of the file before failing and
+    # the whole scan became quadratic (~40 s for 256 KiB of bare "[").
+    content = "[" * (256 * 1024)
+    snapshot = {"files": [{"path": "SKILL.md", "kind": "text", "content": content}]}
+
+    started = time.perf_counter()
+    graph, findings = build_resource_graph(snapshot)
+    elapsed = time.perf_counter() - started
+
+    assert graph["edges"] == []
+    assert findings == []
+    assert elapsed < 2.0, f"markdown link scan regressed to {elapsed:.1f}s for 256 KiB"
 
 
 def test_package_digest_is_path_independent(tmp_path):

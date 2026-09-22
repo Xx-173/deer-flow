@@ -9,7 +9,10 @@ from typing import Any
 from deerflow.skills.package_paths import is_eval_fixture_path
 from deerflow.skills.review.models import make_finding, normalize_relative_path
 
-_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+# The link label may not contain a `[`. Allowing it makes the scan quadratic:
+# every unmatched `[` then consumes the rest of the file before failing, so a
+# 256 KiB buffer of bare `[` needs ~40 s to review instead of milliseconds.
+_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\[\]]*]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _CODE_SPAN_RE = re.compile(r"`([^`]+)`")
 _PATH_TOKEN_RE = re.compile(r"(?<![\w./-])(?:references|scripts|templates|assets|evals)/[A-Za-z0-9._~/%+-]+")
 _RESOURCE_DIRS = {"references", "scripts", "templates", "assets", "evals"}
